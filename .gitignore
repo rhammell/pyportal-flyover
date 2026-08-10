@@ -1,2 +1,12 @@
 # macOS folder metadata files
 .DS_Store
+._*
+
+# Python virtual environment
+.venv/
+
+# Python bytecode caches
+__pycache__/
+
+# Generated imagery artifacts
+generator/output/
