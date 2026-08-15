@@ -10,3 +10,6 @@ __pycache__/
 
 # Generated imagery artifacts
 generator/output/
+
+# FreeCAD backup
+*.FCBak
