@@ -25,33 +25,28 @@ import board
 import digitalio
 import displayio
 
-# ParallelBus moved out of displayio in CircuitPython 9.
 try:
     from paralleldisplaybus import ParallelBus  # CircuitPython 9+
 except ImportError:
     from displayio import ParallelBus
 
-# Tunables.
 DATA_PATH = "/flyover.dat"
 STEP = 1  # pixels advanced per frame
-TARGET_FPS = 15  # pan speed = STEP * TARGET_FPS px/s
+TARGET_FPS = 10  # pan speed = STEP * TARGET_FPS px/s
 
 # MADCTL 0xA8 mirrors the panel's native line order relative to screen x,
 # so panning forward means decrementing the scroll register. If the image
 # pans with a marching band of garbage, set this to False.
 REVERSE = True
 
-# Panel geometry (landscape) and bytes per RGB565 column.
 W = 320
 H = 240
 COL_BYTES = H * 2
 
 # --- Take over the display bus -------------------------------------------
 
-# Detach displayio from the hardware so we can drive the bus ourselves.
 displayio.release_displays()
 
-# Rebuild the 8-bit parallel bus with the pins displayio normally uses.
 bus = ParallelBus(
     data0=board.LCD_DATA0,
     command=board.TFT_RS,  # PB05; board.TFT_DC wrongly aliases the WR pin
@@ -60,8 +55,6 @@ bus = ParallelBus(
     read=board.TFT_RD,
     reset=board.TFT_RESET,
 )
-
-# Hardware-reset the controller and give it time to come back up.
 bus.reset()
 time.sleep(0.1)
 
@@ -82,6 +75,11 @@ INIT = (
     (0x37, b"\x00\x00", 0),  # Scroll start = 0
     (0x3A, b"\x55", 0),  # 16 bits per pixel
     (0xB1, b"\x00\x18", 0),  # Frame rate control
+    # Widen the vertical porches so the blanking window after each TE
+    # pulse is long enough (~2.5 ms) to bump the scroll register and
+    # write a full column before the panel starts scanning again.
+    (0xB5, b"\x10\x30\x0a\x14", 0),  # VFP=16, VBP=48 lines
+    (0x35, b"\x00", 0),  # Tearing-effect line on (V-blank pulses only)
     (0xB6, b"\x08\xa2\x27", 0),  # Display function control
     (0xF2, b"\x00", 0),  # 3Gamma off
     (0x26, b"\x01", 0),  # Gamma curve
@@ -92,7 +90,6 @@ INIT = (
     (0x29, b"", 120),  # Display on
 )
 
-# Send each init command, honoring the required post-command delays.
 for cmd, cmd_data, delay_ms in INIT:
     bus.send(cmd, cmd_data)
     if delay_ms:
@@ -100,7 +97,6 @@ for cmd, cmd_data, delay_ms in INIT:
 
 # --- Column drawing -------------------------------------------------------
 
-# Open the image data and size it in columns; reuse one column buffer.
 data = open(DATA_PATH, "rb")
 data.seek(0, 2)
 total_cols = data.tell() // COL_BYTES
@@ -110,39 +106,53 @@ scroll = 0  # current VSCRSAD register value
 
 
 def set_scroll(value):
-    """Set the panel's vertical scroll start address (VSCRSAD)."""
     bus.send(0x37, struct.pack(">H", value))
 
 
-def write_column(screen_x, world_col):
-    """Load one flyover column from disk into panel memory so that it
-    appears at screen_x under the current scroll value."""
-    # Read the column's pixels straight from flash into the buffer.
+def load_column(world_col):
+    """Read one strip column from disk into the column buffer."""
     data.seek(world_col * COL_BYTES)
     data.readinto(colbuf)
-    # Convert screen position to a frame-memory line, undoing the scroll.
+
+
+def blit_column(screen_x):
+    """Write the column buffer into panel memory so that it appears at
+    screen_x under the current scroll value."""
     if REVERSE:
         xw = (screen_x - scroll) % W
     else:
         xw = (screen_x + scroll) % W
-    # Set a 1-line-wide write window and blast the pixels into it.
     bus.send(0x2A, struct.pack(">HH", xw, xw))  # column address
     bus.send(0x2B, struct.pack(">HH", 0, H - 1))  # row address
     bus.send(0x2C, colbuf)  # memory write
 
 
+# The panel's tearing-effect pin pulses high during each vertical
+# blanking interval (~66 Hz). Scroll bumps and column writes are done
+# inside that window, while the panel is not scanning.
+te = digitalio.DigitalInOut(board.TFT_TE)
+te.switch_to_input()
+
+
+def wait_for_blanking():
+    """Block until the next rising edge of the tearing-effect signal."""
+    while te.value:
+        pass
+    while not te.value:
+        pass
+
+
 # Draw the first screenful before turning the backlight on, so the
 # panel's power-up noise is never visible.
 for x in range(W):
-    write_column(x, x)
+    load_column(x)
+    blit_column(x)
 
-# Now that the screen holds a valid image, switch the backlight on.
 backlight = digitalio.DigitalInOut(board.TFT_BACKLIGHT)
 backlight.switch_to_output(value=True)
 
 # --- Animation loop -------------------------------------------------------
 
-# Pan state: bounce between the ends of the image at a fixed frame rate.
 pos = 0  # world column shown at the left edge of the screen
 direction = 1
 max_pos = total_cols - W
@@ -152,7 +162,6 @@ last_report = time.monotonic()
 next_frame = last_report
 
 while True:
-    # Advance the pan position, reversing direction at either end.
     prev = pos
     pos += STEP * direction
     if pos >= max_pos:
@@ -164,19 +173,29 @@ while True:
     delta = pos - prev  # actual signed movement this frame
 
     if delta:
-        # Bump the hardware scroll register by the movement amount.
         step = -delta if REVERSE else delta
-        scroll = (scroll + step) % W
-        set_scroll(scroll)
-        # Fill in only the columns that just scrolled into view.
         if delta > 0:
             new_xs = range(W - delta, W)  # columns entering on the right
         else:
             new_xs = range(0, -delta)  # columns entering on the left
+        first = True
         for x in new_xs:
-            write_column(x, pos + x)
+            # Read from flash before syncing, so the blanking window is
+            # spent only on fast bus writes.
+            load_column(pos + x)
+            if first:
+                # The scroll register only latches at a frame boundary,
+                # but memory writes land immediately -- so until the next
+                # boundary the entering column's memory line is still
+                # mapped to the exiting edge, where the panel sweep can
+                # catch it and flash it there. Doing the scroll bump and
+                # write inside vertical blanking prevents that.
+                wait_for_blanking()
+                scroll = (scroll + step) % W
+                set_scroll(scroll)
+                first = False
+            blit_column(x)
 
-    # Print the measured frame rate every 5 seconds.
     frames += 1
     now = time.monotonic()
     if now - last_report >= 5:
@@ -184,7 +203,6 @@ while True:
         frames = 0
         last_report = now
 
-    # Sleep until the next frame slot; if we're behind, reset the schedule.
     next_frame += frame_period
     delay = next_frame - time.monotonic()
     if delay > 0:
