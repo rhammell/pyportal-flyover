@@ -46,15 +46,11 @@ BRIGHTNESS = 1.0  # steady-state backlight level (0.0-1.0); the fades
 # so new terrain enters at the top of the rotated screen and scrolls down.
 PORTRAIT = True
 
-# MADCTL 0xA8 mirrors the panel's native line order relative to screen x,
-# so panning forward means decrementing the scroll register. If the image
-# pans with a marching band of garbage, set this to False.
-REVERSE = True
-
-# The portrait MADCTL (0x68) flips the line order back, which also flips
-# which way the scroll register has to move.
-if PORTRAIT:
-    REVERSE = not REVERSE
+# The landscape MADCTL (0xA8) mirrors the panel's native line order
+# relative to screen x, so panning forward means decrementing the scroll
+# register; the portrait MADCTL (0x68) flips the line order back, so it
+# increments. If the image pans with a marching band of garbage, negate.
+SCROLL_DIR = 1 if PORTRAIT else -1
 
 W = 320
 H = 240
@@ -121,6 +117,7 @@ data.seek(0, 2)
 total_cols = data.tell() // COL_BYTES
 colbuf = bytearray(COL_BYTES)
 
+ROW_WINDOW = struct.pack(">HH", 0, H - 1)  # full-height row address window
 scroll = 0  # current VSCRSAD register value
 
 
@@ -137,12 +134,9 @@ def load_column(world_col):
 def blit_column(screen_x):
     """Write the column buffer into panel memory so that it appears at
     screen_x under the current scroll value."""
-    if REVERSE:
-        xw = (screen_x - scroll) % W
-    else:
-        xw = (screen_x + scroll) % W
+    xw = (screen_x + SCROLL_DIR * scroll) % W
     bus.send(0x2A, struct.pack(">HH", xw, xw))  # column address
-    bus.send(0x2B, struct.pack(">HH", 0, H - 1))  # row address
+    bus.send(0x2B, ROW_WINDOW)  # row address
     bus.send(0x2C, colbuf)  # memory write
 
 
@@ -215,7 +209,7 @@ while True:
                 # catch it and flash it there. Doing the scroll bump and
                 # write inside vertical blanking prevents that.
                 wait_for_blanking()
-                scroll = (scroll + (-delta if REVERSE else delta)) % W
+                scroll = (scroll + SCROLL_DIR * delta) % W
                 set_scroll(scroll)
                 first = False
             blit_column(x)
