@@ -44,8 +44,9 @@ FADE_IN_S = 4.0
 FADE_OUT_S = 4.0
 HOLD_BLACK_S = 1.0
 
-# Steady-state backlight level (0.0-1.0); fades ramp between black and this.
-BRIGHTNESS = 1.0
+# Steady-state backlight levels (0.0-1.0); each screen touch cycles to the
+# next, starting on the last. Fades ramp between black and the current level.
+BRIGHTNESS_LEVELS = (0.25, 0.50, 0.75, 1.0)
 
 # Mounting orientation. Landscape: terrain enters on the right. Portrait
 # (landscape-left edge up): output is rotated 180 so terrain enters on top.
@@ -166,6 +167,34 @@ def wait_for_blanking():
 # Backlight starts dark; flights fade it up and down, hiding the resets.
 backlight = pwmio.PWMOut(board.TFT_BACKLIGHT, frequency=25000, duty_cycle=0)
 
+# Touch sensing: hold the resistive panel's X plate low and pull the Y
+# sense line up; a press shorts the plates and pulls the sense line low.
+touch_xl = digitalio.DigitalInOut(board.TOUCH_XL)
+touch_xl.switch_to_output(value=False)
+touch_xr = digitalio.DigitalInOut(board.TOUCH_XR)
+touch_xr.switch_to_output(value=False)
+touch_sense = digitalio.DigitalInOut(board.TOUCH_YU)
+touch_sense.switch_to_input(pull=digitalio.Pull.UP)
+
+# Brightness selection state, advanced by check_touch().
+brightness_idx = len(BRIGHTNESS_LEVELS) - 1
+brightness = BRIGHTNESS_LEVELS[brightness_idx]
+touch_was_pressed = False
+touch_last_cycle = 0.0
+
+
+def check_touch():
+    """Cycle to the next brightness level on each new press. A short
+    lockout after each cycle absorbs contact bounce."""
+    global brightness_idx, brightness, touch_was_pressed, touch_last_cycle
+    pressed = not touch_sense.value
+    now = time.monotonic()
+    if pressed and not touch_was_pressed and now - touch_last_cycle > 0.25:
+        brightness_idx = (brightness_idx + 1) % len(BRIGHTNESS_LEVELS)
+        brightness = BRIGHTNESS_LEVELS[brightness_idx]
+        touch_last_cycle = now
+    touch_was_pressed = pressed
+
 
 # Pan range, frame interval, and one flight's duration (ceil of frames
 # needed), which schedules the fade-out against the flight's end.
@@ -180,14 +209,14 @@ last_report = time.monotonic()
 
 def update_fade(flight_start):
     """Set the backlight from the flight's elapsed time: ramp up over
-    FADE_IN_S, hold at BRIGHTNESS, ramp down over the final FADE_OUT_S.
-    Squaring the ramp compensates for the eye's nonlinear brightness
-    response so the fades look even."""
+    FADE_IN_S, hold at the current brightness level, ramp down over the
+    final FADE_OUT_S. Squaring the ramp compensates for the eye's
+    nonlinear brightness response so the fades look even."""
     t = time.monotonic() - flight_start
     k = min(t / FADE_IN_S, (flight_s - t) / FADE_OUT_S, 1.0)
     if k < 0:
         k = 0
-    backlight.duty_cycle = int(65535 * BRIGHTNESS * k * k)
+    backlight.duty_cycle = int(65535 * brightness * k * k)
 
 
 while True:
@@ -233,10 +262,11 @@ while True:
             frames = 0
             last_report = now
 
-        # Spend the inter-frame wait updating the backlight ramp in
-        # small slices so the fades stay smooth between frames.
+        # Spend the inter-frame wait polling touch and updating the
+        # backlight ramp in small slices so the fades stay smooth.
         next_frame += frame_period
         while True:
+            check_touch()
             update_fade(flight_start)
             remaining = next_frame - time.monotonic()
             if remaining <= 0:
@@ -247,6 +277,10 @@ while True:
         if time.monotonic() - next_frame > frame_period:
             next_frame = time.monotonic()
 
-    # Flight complete: settle on black, pause, then restart from the top.
+    # Flight complete: settle on black, pause (still watching for touches),
+    # then restart from the top.
     backlight.duty_cycle = 0
-    time.sleep(HOLD_BLACK_S)
+    hold_end = time.monotonic() + HOLD_BLACK_S
+    while time.monotonic() < hold_end:
+        check_touch()
+        time.sleep(0.02)
