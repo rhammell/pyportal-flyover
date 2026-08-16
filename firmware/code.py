@@ -31,25 +31,28 @@ try:
 except ImportError:
     from displayio import ParallelBus
 
+# Flyover image data.
 DATA_PATH = "/flyover.dat"
-STEP = 1  # pixels advanced per frame
-TARGET_FPS = 50  # pan speed = STEP * TARGET_FPS px/s
-FADE_IN_S = 4.0  # backlight fade-in duration at the start of each flight
-FADE_OUT_S = 4.0  # backlight fade-out duration at the end of each flight
-HOLD_BLACK_S = 1.0  # pause on black between flights
-BRIGHTNESS = 1.0  # steady-state backlight level (0.0-1.0); the fades
-#                   ramp between black and this level
 
-# Physical mounting orientation. False = landscape: new terrain enters on
-# the right edge. True = portrait, stood on its side with the landscape-left
-# edge at the top: the panel output is rotated 180 degrees in its memory,
-# so new terrain enters at the top of the rotated screen and scrolls down.
+# Pixels advanced per frame; pan speed = STEP * TARGET_FPS px/s.
+STEP = 1
+TARGET_FPS = 50
+
+# Backlight fade durations at the start and end of each flight, and the
+# pause on black in between flights.
+FADE_IN_S = 4.0
+FADE_OUT_S = 4.0
+HOLD_BLACK_S = 1.0
+
+# Steady-state backlight level (0.0-1.0); fades ramp between black and this.
+BRIGHTNESS = 1.0
+
+# Mounting orientation. Landscape: terrain enters on the right. Portrait
+# (landscape-left edge up): output is rotated 180 so terrain enters on top.
 PORTRAIT = True
 
-# The landscape MADCTL (0xA8) mirrors the panel's native line order
-# relative to screen x, so panning forward means decrementing the scroll
-# register; the portrait MADCTL (0x68) flips the line order back, so it
-# increments. If the image pans with a marching band of garbage, negate.
+# Scroll register direction per MADCTL line order: landscape (0xA8)
+# decrements, portrait (0x68) increments. If it pans with garbage, negate.
 SCROLL_DIR = 1 if PORTRAIT else -1
 
 W = 320
@@ -58,8 +61,11 @@ COL_BYTES = H * 2
 
 # --- Take over the display bus -------------------------------------------
 
+# Detach displayio from the hardware so we can drive the bus ourselves.
 displayio.release_displays()
 
+# Rebuild the 8-bit parallel bus with the pins displayio normally uses,
+# then hardware-reset the controller and give it time to come back up.
 bus = ParallelBus(
     data0=board.LCD_DATA0,
     command=board.TFT_RS,  # PB05; board.TFT_DC wrongly aliases the WR pin
@@ -105,6 +111,7 @@ INIT = (
     (0x29, b"", 120),  # Display on
 )
 
+# Send each init command, honoring the required post-command delays.
 for cmd, cmd_data, delay_ms in INIT:
     bus.send(cmd, cmd_data)
     if delay_ms:
@@ -112,6 +119,8 @@ for cmd, cmd_data, delay_ms in INIT:
 
 # --- Column drawing -------------------------------------------------------
 
+# Open the image data, size it in columns, and set up a reusable buffer
+# that holds one column of pixels at a time.
 data = open(DATA_PATH, "rb")
 data.seek(0, 2)
 total_cols = data.tell() // COL_BYTES
@@ -140,9 +149,8 @@ def blit_column(screen_x):
     bus.send(0x2C, colbuf)  # memory write
 
 
-# The panel's tearing-effect pin pulses high during each vertical
-# blanking interval (~66 Hz). Scroll bumps and column writes are done
-# inside that window, while the panel is not scanning.
+# The tearing-effect pin pulses high during vertical blanking (~66 Hz);
+# scroll bumps and column writes happen inside that scan-free window.
 te = digitalio.DigitalInOut(board.TFT_TE)
 te.switch_to_input()
 
@@ -155,16 +163,17 @@ def wait_for_blanking():
         pass
 
 
-# The backlight starts dark; each flight fades it up at the start and
-# back down at the end, so the reset between flights happens unseen.
+# Backlight starts dark; flights fade it up and down, hiding the resets.
 backlight = pwmio.PWMOut(board.TFT_BACKLIGHT, frequency=25000, duty_cycle=0)
 
-# --- Animation loop -------------------------------------------------------
 
+# Pan range, frame interval, and one flight's duration (ceil of frames
+# needed), which schedules the fade-out against the flight's end.
 max_pos = total_cols - W
 frame_period = 1 / TARGET_FPS
-# Time one flight takes, used to schedule the fade-out against its end.
 flight_s = -(-max_pos // STEP) * frame_period
+
+# State for the periodic fps report.
 frames = 0
 last_report = time.monotonic()
 
@@ -188,11 +197,15 @@ while True:
         load_column(x)
         blit_column(x)
 
-    pos = 0  # world column shown at the left edge of the screen
+    # Per-flight state: the world column at the screen's left edge, plus
+    # the timestamps that drive the fades and the frame schedule.
+    pos = 0
     flight_start = time.monotonic()
     next_frame = flight_start
 
     while pos < max_pos:
+        # Advance the pan by one step, clamped so it lands exactly on the
+        # end of the route.
         delta = min(STEP, max_pos - pos)
         pos += delta
 
@@ -202,18 +215,17 @@ while True:
             # spent only on fast bus writes.
             load_column(pos + x)
             if first:
-                # The scroll register only latches at a frame boundary,
-                # but memory writes land immediately -- so until the next
-                # boundary the entering column's memory line is still
-                # mapped to the exiting edge, where the panel sweep can
-                # catch it and flash it there. Doing the scroll bump and
-                # write inside vertical blanking prevents that.
+                # Scroll bumps latch at the frame boundary but writes land
+                # immediately, so until then the entering column's line is
+                # still mapped to the exiting edge. Writing inside vertical
+                # blanking keeps the sweep from flashing it there.
                 wait_for_blanking()
                 scroll = (scroll + SCROLL_DIR * delta) % W
                 set_scroll(scroll)
                 first = False
             blit_column(x)
 
+        # Print the measured frame rate every 5 seconds.
         frames += 1
         now = time.monotonic()
         if now - last_report >= 5:
@@ -230,8 +242,10 @@ while True:
             if remaining <= 0:
                 break
             time.sleep(min(remaining, 0.02))
+        # If more than a full frame behind schedule, resync rather than
+        # racing to catch up.
         if time.monotonic() - next_frame > frame_period:
-            next_frame = time.monotonic()  # behind schedule; resync
+            next_frame = time.monotonic()
 
     # Flight complete: settle on black, pause, then restart from the top.
     backlight.duty_cycle = 0
