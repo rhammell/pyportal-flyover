@@ -40,10 +40,21 @@ HOLD_BLACK_S = 1.0  # pause on black between flights
 BRIGHTNESS = 1.0  # steady-state backlight level (0.0-1.0); the fades
 #                   ramp between black and this level
 
+# Physical mounting orientation. False = landscape: new terrain enters on
+# the right edge. True = portrait, stood on its side with the landscape-left
+# edge at the top: the panel output is rotated 180 degrees in its memory,
+# so new terrain enters at the top of the rotated screen and scrolls down.
+PORTRAIT = True
+
 # MADCTL 0xA8 mirrors the panel's native line order relative to screen x,
 # so panning forward means decrementing the scroll register. If the image
 # pans with a marching band of garbage, set this to False.
 REVERSE = True
+
+# The portrait MADCTL (0x68) flips the line order back, which also flips
+# which way the scroll register has to move.
+if PORTRAIT:
+    REVERSE = not REVERSE
 
 W = 320
 H = 240
@@ -77,7 +88,9 @@ INIT = (
     (0xC1, b"\x10", 0),  # Power control SAP/BT
     (0xC5, b"\x3e\x28", 0),  # VCM control
     (0xC7, b"\x86", 0),  # VCM control 2
-    (0x36, b"\xa8", 0),  # MADCTL: landscape, BGR
+    # MADCTL: BGR color order; 0x68 flips both address-order bits relative
+    # to 0xA8, i.e. a 180-degree rotation in panel memory for portrait.
+    (0x36, b"\x68" if PORTRAIT else b"\xa8", 0),
     (0x37, b"\x00\x00", 0),  # Scroll start = 0
     (0x3A, b"\x55", 0),  # 16 bits per pixel
     (0xB1, b"\x00\x18", 0),  # Frame rate control
