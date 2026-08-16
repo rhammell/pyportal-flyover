@@ -24,6 +24,7 @@ import time
 import board
 import digitalio
 import displayio
+import pwmio
 
 try:
     from paralleldisplaybus import ParallelBus  # CircuitPython 9+
@@ -32,7 +33,12 @@ except ImportError:
 
 DATA_PATH = "/flyover.dat"
 STEP = 1  # pixels advanced per frame
-TARGET_FPS = 10  # pan speed = STEP * TARGET_FPS px/s
+TARGET_FPS = 50  # pan speed = STEP * TARGET_FPS px/s
+FADE_IN_S = 4.0  # backlight fade-in duration at the start of each flight
+FADE_OUT_S = 4.0  # backlight fade-out duration at the end of each flight
+HOLD_BLACK_S = 1.0  # pause on black between flights
+BRIGHTNESS = 1.0  # steady-state backlight level (0.0-1.0); the fades
+#                   ramp between black and this level
 
 # MADCTL 0xA8 mirrors the panel's native line order relative to screen x,
 # so panning forward means decrementing the scroll register. If the image
@@ -142,44 +148,49 @@ def wait_for_blanking():
         pass
 
 
-# Draw the first screenful before turning the backlight on, so the
-# panel's power-up noise is never visible.
-for x in range(W):
-    load_column(x)
-    blit_column(x)
-
-backlight = digitalio.DigitalInOut(board.TFT_BACKLIGHT)
-backlight.switch_to_output(value=True)
+# The backlight starts dark; each flight fades it up at the start and
+# back down at the end, so the reset between flights happens unseen.
+backlight = pwmio.PWMOut(board.TFT_BACKLIGHT, frequency=25000, duty_cycle=0)
 
 # --- Animation loop -------------------------------------------------------
 
-pos = 0  # world column shown at the left edge of the screen
-direction = 1
 max_pos = total_cols - W
 frame_period = 1 / TARGET_FPS
+# Time one flight takes, used to schedule the fade-out against its end.
+flight_s = -(-max_pos // STEP) * frame_period
 frames = 0
 last_report = time.monotonic()
-next_frame = last_report
+
+
+def update_fade(flight_start):
+    """Set the backlight from the flight's elapsed time: ramp up over
+    FADE_IN_S, hold at BRIGHTNESS, ramp down over the final FADE_OUT_S.
+    Squaring the ramp compensates for the eye's nonlinear brightness
+    response so the fades look even."""
+    t = time.monotonic() - flight_start
+    k = min(t / FADE_IN_S, (flight_s - t) / FADE_OUT_S, 1.0)
+    if k < 0:
+        k = 0
+    backlight.duty_cycle = int(65535 * BRIGHTNESS * k * k)
+
 
 while True:
-    prev = pos
-    pos += STEP * direction
-    if pos >= max_pos:
-        pos = max_pos
-        direction = -1
-    elif pos <= 0:
-        pos = 0
-        direction = 1
-    delta = pos - prev  # actual signed movement this frame
+    # Draw the starting screenful while the backlight is dark, then fly
+    # the route once, scrolling in one direction only.
+    for x in range(W):
+        load_column(x)
+        blit_column(x)
 
-    if delta:
-        step = -delta if REVERSE else delta
-        if delta > 0:
-            new_xs = range(W - delta, W)  # columns entering on the right
-        else:
-            new_xs = range(0, -delta)  # columns entering on the left
+    pos = 0  # world column shown at the left edge of the screen
+    flight_start = time.monotonic()
+    next_frame = flight_start
+
+    while pos < max_pos:
+        delta = min(STEP, max_pos - pos)
+        pos += delta
+
         first = True
-        for x in new_xs:
+        for x in range(W - delta, W):  # columns entering on the right
             # Read from flash before syncing, so the blanking window is
             # spent only on fast bus writes.
             load_column(pos + x)
@@ -191,21 +202,30 @@ while True:
                 # catch it and flash it there. Doing the scroll bump and
                 # write inside vertical blanking prevents that.
                 wait_for_blanking()
-                scroll = (scroll + step) % W
+                scroll = (scroll + (-delta if REVERSE else delta)) % W
                 set_scroll(scroll)
                 first = False
             blit_column(x)
 
-    frames += 1
-    now = time.monotonic()
-    if now - last_report >= 5:
-        print(f"{frames / (now - last_report):.1f} fps")
-        frames = 0
-        last_report = now
+        frames += 1
+        now = time.monotonic()
+        if now - last_report >= 5:
+            print(f"{frames / (now - last_report):.1f} fps")
+            frames = 0
+            last_report = now
 
-    next_frame += frame_period
-    delay = next_frame - time.monotonic()
-    if delay > 0:
-        time.sleep(delay)
-    else:
-        next_frame = time.monotonic()
+        # Spend the inter-frame wait updating the backlight ramp in
+        # small slices so the fades stay smooth between frames.
+        next_frame += frame_period
+        while True:
+            update_fade(flight_start)
+            remaining = next_frame - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(remaining, 0.02))
+        if time.monotonic() - next_frame > frame_period:
+            next_frame = time.monotonic()  # behind schedule; resync
+
+    # Flight complete: settle on black, pause, then restart from the top.
+    backlight.duty_cycle = 0
+    time.sleep(HOLD_BLACK_S)
