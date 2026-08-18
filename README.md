@@ -45,7 +45,9 @@ Generate the flyover image data by running the generator script, after editing `
 .venv/bin/python generator/generate_flyover.py
 ```
 
-Preview the route in `generator/output/flyover.bmp`, then deploy in two steps. First, copy the image strip data to the root of a FAT32-formatted SD card (named `FLYOVER` here) and insert the card into the PyPortal's slot:
+Preview the route in `generator/output/flyover.bmp`, then deploy in two steps. 
+
+First, copy the image strip data to the root of a FAT32-formatted micro SD card (ex. volume name FLYOVER) and insert the card into the PyPortal's SD slot:
 
 ```bash
 cp generator/output/flyover.dat /Volumes/FLYOVER/
