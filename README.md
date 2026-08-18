@@ -18,7 +18,7 @@ The corridor is fetched in 1024-column chunks, one API call each. Every chunk is
 
 ### Image Display
 
-The flyover is displayed by `firmware/code.py`, which runs on the PyPortal and reads `flyover.dat` from the CIRCUITPY drive. `STEP` and `TARGET_FPS` set the pan speed (STEP x TARGET_FPS px/s). Since the data file is far larger than the PyPortal's RAM, it is never loaded whole -- the script streams it one 480-byte column at a time into a reusable buffer, keeping memory use constant for any route length.
+The flyover is displayed by `firmware/code.py`, which runs on the PyPortal and reads `flyover.dat` from an SD card in the PyPortal's card slot. `STEP` and `TARGET_FPS` set the pan speed (STEP x TARGET_FPS px/s). Since the data file is far larger than the PyPortal's RAM, it is never loaded whole -- the script streams it one 480-byte column at a time into a reusable buffer, keeping memory use constant for any route length.
 
 For smooth animation, the script drives the ILI9341 display controller directly and uses its hardware scrolling: after the first screenful is drawn, each frame just bumps the scroll register and writes the newly exposed columns, synced to vertical blanking for tear-free panning. Each completed flight fades the backlight out, resets, and fades back in, and touching the screen cycles through preset brightness levels.
 
@@ -45,10 +45,17 @@ Generate the flyover image data by running the generator script, after editing `
 .venv/bin/python generator/generate_flyover.py
 ```
 
-Preview the route in `generator/output/flyover.bmp`, then deploy by copying the firmware code and image strip data to the PyPortal's CIRCUITPY drive:
+Preview the route in `generator/output/flyover.bmp`, then deploy in two steps. First, copy the image strip data to the root of a FAT32-formatted SD card (named `FLYOVER` here) and insert the card into the PyPortal's slot:
 
 ```bash
-cp generator/output/flyover.dat firmware/code.py /Volumes/CIRCUITPY/
+cp generator/output/flyover.dat /Volumes/FLYOVER/
 ```
 
-The PyPortal auto-reloads and starts the flyover.
+Then copy the firmware code to the PyPortal's CIRCUITPY drive, and create the `sd` folder the card gets mounted onto (one-time setup, required by CircuitPython):
+
+```bash
+cp firmware/code.py /Volumes/CIRCUITPY/
+mkdir -p /Volumes/CIRCUITPY/sd
+```
+
+The PyPortal auto-reloads and starts the flyover. The SD card must be inserted before the PyPortal powers on, since the card is mounted at startup.

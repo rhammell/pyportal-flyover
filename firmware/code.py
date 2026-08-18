@@ -15,7 +15,7 @@ and the scroll wraps around -- the panel's frame memory acts as the
 ring buffer.
 
 Requires flyover.dat: raw big-endian RGB565 pixels, column-major
-(each column is one contiguous 480-byte record).
+(each column is one contiguous 480-byte record), stored on the SD card.
 """
 
 import struct
@@ -25,14 +25,16 @@ import board
 import digitalio
 import displayio
 import pwmio
+import sdcardio
+import storage
 
 try:
     from paralleldisplaybus import ParallelBus  # CircuitPython 9+
 except ImportError:
     from displayio import ParallelBus
 
-# Flyover image data.
-DATA_PATH = "/flyover.dat"
+# Flyover image data, read from the SD card.
+DATA_PATH = "/sd/flyover.dat"
 
 # Pixels advanced per frame; pan speed = STEP * TARGET_FPS px/s.
 STEP = 1
@@ -119,6 +121,10 @@ for cmd, cmd_data, delay_ms in INIT:
         time.sleep(delay_ms / 1000)
 
 # --- Column drawing -------------------------------------------------------
+
+# Mount the SD card (shares the main SPI bus, selected by SD_CS).
+sd = sdcardio.SDCard(board.SPI(), board.SD_CS)
+storage.mount(storage.VfsFat(sd), "/sd")
 
 # Open the image data, size it in columns, and set up a reusable buffer
 # that holds one column of pixels at a time.
@@ -240,7 +246,7 @@ while True:
 
         first = True
         for x in range(W - delta, W):  # columns entering on the right
-            # Read from flash before syncing, so the blanking window is
+            # Read from the SD card before syncing, so the blanking window is
             # spent only on fast bus writes.
             load_column(pos + x)
             if first:
