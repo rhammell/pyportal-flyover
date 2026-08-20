@@ -36,8 +36,10 @@ except ImportError:
 # Flyover image data, read from the SD card.
 DATA_PATH = "/sd/flyover.dat"
 
-# Pixels advanced per frame; pan speed = STEP * TARGET_FPS px/s.
-STEP = 1
+# Pan speed in pixels per second and loop rate. The loop runs at
+# TARGET_FPS for smooth fades/touch; the accumulator advances the
+# scroll by PAN_SPEED/TARGET_FPS pixels per frame (fractional).
+PAN_SPEED = 160
 TARGET_FPS = 50
 
 # Backlight fade durations at the start and end of each flight, and the
@@ -202,11 +204,10 @@ def check_touch():
     touch_was_pressed = pressed
 
 
-# Pan range, frame interval, and one flight's duration (ceil of frames
-# needed), which schedules the fade-out against the flight's end.
+# Pan range, frame interval, and one flight's duration based on speed.
 max_pos = total_cols - W
 frame_period = 1 / TARGET_FPS
-flight_s = -(-max_pos // STEP) * frame_period
+flight_s = max_pos / PAN_SPEED
 
 # State for the periodic fps report.
 frames = 0
@@ -235,30 +236,36 @@ while True:
     # Per-flight state: the world column at the screen's left edge, plus
     # the timestamps that drive the fades and the frame schedule.
     pos = 0
+    sub_pos = 0.0
+    sub_step = PAN_SPEED / TARGET_FPS
     flight_start = time.monotonic()
     next_frame = flight_start
 
     while pos < max_pos:
-        # Advance the pan by one step, clamped so it lands exactly on the
-        # end of the route.
-        delta = min(STEP, max_pos - pos)
-        pos += delta
+        # Accumulate fractional scroll progress; only advance when a
+        # full pixel boundary is crossed.
+        sub_pos += sub_step
+        if sub_pos >= 1.0:
+            delta = int(sub_pos)
+            sub_pos -= delta
+            delta = min(delta, max_pos - pos)
+            pos += delta
 
-        first = True
-        for x in range(W - delta, W):  # columns entering on the right
-            # Read from the SD card before syncing, so the blanking window is
-            # spent only on fast bus writes.
-            load_column(pos + x)
-            if first:
-                # Scroll bumps latch at the frame boundary but writes land
-                # immediately, so until then the entering column's line is
-                # still mapped to the exiting edge. Writing inside vertical
-                # blanking keeps the sweep from flashing it there.
-                wait_for_blanking()
-                scroll = (scroll + SCROLL_DIR * delta) % W
-                set_scroll()
-                first = False
-            blit_column(x)
+            first = True
+            for x in range(W - delta, W):  # columns entering on the right
+                # Read from the SD card before syncing, so the blanking window
+                # is spent only on fast bus writes.
+                load_column(pos + x)
+                if first:
+                    # Scroll bumps latch at the frame boundary but writes land
+                    # immediately, so until then the entering column's line is
+                    # still mapped to the exiting edge. Writing inside vertical
+                    # blanking keeps the sweep from flashing it there.
+                    wait_for_blanking()
+                    scroll = (scroll + SCROLL_DIR * delta) % W
+                    set_scroll()
+                    first = False
+                blit_column(x)
 
         # Print the measured frame rate every 5 seconds.
         frames += 1
