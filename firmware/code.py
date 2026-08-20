@@ -61,11 +61,12 @@ PORTRAIT = True
 # decrements, portrait (0x68) increments. If it pans with garbage, negate.
 SCROLL_DIR = 1 if PORTRAIT else -1
 
+# Screen width and height.
 W = 320
 H = 240
-COL_BYTES = H * 2
 
-# --- Take over the display bus -------------------------------------------
+# Number of bytes per column.
+COL_BYTES = H * 2
 
 # Detach displayio from the hardware so we can drive the bus ourselves.
 displayio.release_displays()
@@ -123,8 +124,6 @@ for cmd, cmd_data, delay_ms in INIT:
     if delay_ms:
         time.sleep(delay_ms / 1000)
 
-# --- Column drawing -------------------------------------------------------
-
 # Mount the SD card (shares the main SPI bus, selected by SD_CS).
 sd = sdcardio.SDCard(board.SPI(), board.SD_CS)
 storage.mount(storage.VfsFat(sd), "/sd")
@@ -136,6 +135,7 @@ data.seek(0, 2)
 total_cols = data.tell() // COL_BYTES
 colbuf = bytearray(COL_BYTES)
 
+# Full-height row address window.
 ROW_WINDOW = struct.pack(">HH", 0, H - 1)  # full-height row address window
 scroll = 0  # current VSCRSAD register value
 
@@ -194,6 +194,7 @@ speed_idx = 0
 pan_speed = SPEED_LEVELS[speed_idx]
 sub_step = pan_speed / TARGET_FPS
 
+# Touch detection state.
 touch_was_pressed = False
 touch_last_cycle = 0.0
 
@@ -300,15 +301,18 @@ while True:
     next_frame = flight_start
 
     while pos < max_pos:
-        # Accumulate fractional scroll progress; only advance when a
-        # full pixel boundary is crossed.
+        # Accumulate fractional scroll progress
         sub_pos += sub_step
+
+        # Advance the scroll position when a full pixel boundary is crossed.
         if sub_pos >= 1.0:
+            # Convert the fractional progress to an integer number of pixels.
             delta = int(sub_pos)
             sub_pos -= delta
             delta = min(delta, max_pos - pos)
             pos += delta
 
+            # Blit the columns entering on the right.
             first = True
             for x in range(W - delta, W):  # columns entering on the right
                 # Read from the SD card before syncing, so the blanking window
