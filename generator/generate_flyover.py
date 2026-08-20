@@ -38,11 +38,11 @@ from PIL import Image
 # Route endpoints as (lat, lon). Both points must be within the United
 # States -- the USGS imagery service has no coverage elsewhere, and
 # routes outside the US come back blank.
-START = (34.052, -118.244)  # Los Angeles
-END = (40.713, -74.006)  # New York City
+START = (38.030, -78.477)  # Charlottesville, VA
+END = (38.9531, -77.4565)  # Dulles International Airport, VA
 
 # Web Mercator zoom level. 13-14 = regional/airliner view, 15-16 = low altitude.
-ZOOM = 12
+ZOOM = 14
 
 # Corridor dimensions in pixels.
 HEIGHT = 240  # corridor height = screen height

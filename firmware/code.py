@@ -52,7 +52,7 @@ BRIGHTNESS_LEVELS = (0.25, 0.50, 0.75, 1.0)
 
 # Mounting orientation. Landscape: terrain enters on the right. Portrait
 # (landscape-left edge up): output is rotated 180 so terrain enters on top.
-PORTRAIT = True
+PORTRAIT = False
 
 # Scroll register direction per MADCTL line order: landscape (0xA8)
 # decrements, portrait (0x68) increments. If it pans with garbage, negate.
@@ -137,8 +137,8 @@ ROW_WINDOW = struct.pack(">HH", 0, H - 1)  # full-height row address window
 scroll = 0  # current VSCRSAD register value
 
 
-def set_scroll(value):
-    bus.send(0x37, struct.pack(">H", value))
+def set_scroll():
+    bus.send(0x37, struct.pack(">H", scroll))
 
 
 def load_column(world_col):
@@ -256,7 +256,7 @@ while True:
                 # blanking keeps the sweep from flashing it there.
                 wait_for_blanking()
                 scroll = (scroll + SCROLL_DIR * delta) % W
-                set_scroll(scroll)
+                set_scroll()
                 first = False
             blit_column(x)
 
