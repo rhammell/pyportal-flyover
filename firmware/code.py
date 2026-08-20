@@ -18,6 +18,7 @@ Requires flyover.dat: raw big-endian RGB565 pixels, column-major
 (each column is one contiguous 480-byte record), stored on the SD card.
 """
 
+import analogio
 import struct
 import time
 
@@ -38,8 +39,8 @@ DATA_PATH = "/sd/flyover.dat"
 
 # Pan speed in pixels per second and loop rate. The loop runs at
 # TARGET_FPS for smooth fades/touch; the accumulator advances the
-# scroll by PAN_SPEED/TARGET_FPS pixels per frame (fractional).
-PAN_SPEED = 160
+# scroll by pan_speed/TARGET_FPS pixels per frame (fractional).
+SPEED_LEVELS = (10, 30, 60, 120, 200)
 TARGET_FPS = 50
 
 # Backlight fade durations at the start and end of each flight, and the
@@ -54,7 +55,7 @@ BRIGHTNESS_LEVELS = (0.25, 0.50, 0.75, 1.0)
 
 # Mounting orientation. Landscape: terrain enters on the right. Portrait
 # (landscape-left edge up): output is rotated 180 so terrain enters on top.
-PORTRAIT = False
+PORTRAIT = True
 
 # Scroll register direction per MADCTL line order: landscape (0xA8)
 # decrements, portrait (0x68) increments. If it pans with garbage, negate.
@@ -184,43 +185,101 @@ touch_xr.switch_to_output(value=False)
 touch_sense = digitalio.DigitalInOut(board.TOUCH_YU)
 touch_sense.switch_to_input(pull=digitalio.Pull.UP)
 
-# Brightness selection state, advanced by check_touch().
+# Brightness selection state.
 brightness_idx = len(BRIGHTNESS_LEVELS) - 1
 brightness = BRIGHTNESS_LEVELS[brightness_idx]
+
+# Speed selection state.
+speed_idx = 0
+pan_speed = SPEED_LEVELS[speed_idx]
+sub_step = pan_speed / TARGET_FPS
+
 touch_was_pressed = False
 touch_last_cycle = 0.0
 
 
+def read_touch_zone():
+    """Determine which screen half was touched by reading the resistive
+    position. Temporarily reconfigures pins for analog reading, then
+    restores detection mode. Returns True for the speed zone (right in
+    landscape, bottom in portrait), False for brightness zone."""
+    global touch_xl, touch_xr, touch_sense
+    touch_xl.deinit()
+    touch_xr.deinit()
+    touch_sense.deinit()
+
+    if PORTRAIT:
+        # Touch panel Y axis runs top-bottom in portrait.
+        yu = digitalio.DigitalInOut(board.TOUCH_YU)
+        yu.switch_to_output(value=True)
+        yd = digitalio.DigitalInOut(board.TOUCH_YD)
+        yd.switch_to_output(value=False)
+        sense = analogio.AnalogIn(board.TOUCH_XL)
+        value = sense.value
+        sense.deinit()
+        yu.deinit()
+        yd.deinit()
+        is_speed = value > 32768
+    else:
+        # Touch panel Y axis runs left-right in landscape.
+        yu = digitalio.DigitalInOut(board.TOUCH_YU)
+        yu.switch_to_output(value=True)
+        yd = digitalio.DigitalInOut(board.TOUCH_YD)
+        yd.switch_to_output(value=False)
+        sense = analogio.AnalogIn(board.TOUCH_XL)
+        value = sense.value
+        sense.deinit()
+        yu.deinit()
+        yd.deinit()
+        is_speed = value > 32768
+
+    # Restore detection mode.
+    touch_xl = digitalio.DigitalInOut(board.TOUCH_XL)
+    touch_xl.switch_to_output(value=False)
+    touch_xr = digitalio.DigitalInOut(board.TOUCH_XR)
+    touch_xr.switch_to_output(value=False)
+    touch_sense = digitalio.DigitalInOut(board.TOUCH_YU)
+    touch_sense.switch_to_input(pull=digitalio.Pull.UP)
+    return is_speed
+
+
 def check_touch():
-    """Cycle to the next brightness level on each new press. A short
-    lockout after each cycle absorbs contact bounce."""
-    global brightness_idx, brightness, touch_was_pressed, touch_last_cycle
+    """On each new press, read which half of the screen was touched and
+    cycle the corresponding setting. A short lockout absorbs bounce."""
+    global brightness_idx, brightness, speed_idx, pan_speed, sub_step
+    global touch_was_pressed, touch_last_cycle
     pressed = not touch_sense.value
     now = time.monotonic()
     if pressed and not touch_was_pressed and now - touch_last_cycle > 0.25:
-        brightness_idx = (brightness_idx + 1) % len(BRIGHTNESS_LEVELS)
-        brightness = BRIGHTNESS_LEVELS[brightness_idx]
+        if read_touch_zone():
+            speed_idx = (speed_idx + 1) % len(SPEED_LEVELS)
+            pan_speed = SPEED_LEVELS[speed_idx]
+            sub_step = pan_speed / TARGET_FPS
+        else:
+            brightness_idx = (brightness_idx + 1) % len(BRIGHTNESS_LEVELS)
+            brightness = BRIGHTNESS_LEVELS[brightness_idx]
         touch_last_cycle = now
     touch_was_pressed = pressed
 
 
-# Pan range, frame interval, and one flight's duration based on speed.
+# Pan range and frame interval.
 max_pos = total_cols - W
 frame_period = 1 / TARGET_FPS
-flight_s = max_pos / PAN_SPEED
 
 # State for the periodic fps report.
 frames = 0
 last_report = time.monotonic()
 
 
-def update_fade(flight_start):
-    """Set the backlight from the flight's elapsed time: ramp up over
-    FADE_IN_S, hold at the current brightness level, ramp down over the
-    final FADE_OUT_S. Squaring the ramp compensates for the eye's
-    nonlinear brightness response so the fades look even."""
+def update_fade(flight_start, pos):
+    """Set the backlight from the flight's elapsed time and remaining
+    distance: ramp up over FADE_IN_S, hold at the current brightness
+    level, ramp down over the final FADE_OUT_S (estimated from remaining
+    columns at current speed). Squaring the ramp compensates for the
+    eye's nonlinear brightness response so the fades look even."""
     t = time.monotonic() - flight_start
-    k = min(t / FADE_IN_S, (flight_s - t) / FADE_OUT_S, 1.0)
+    remaining_s = (max_pos - pos) / pan_speed
+    k = min(t / FADE_IN_S, remaining_s / FADE_OUT_S, 1.0)
     if k < 0:
         k = 0
     backlight.duty_cycle = int(65535 * brightness * k * k)
@@ -237,7 +296,6 @@ while True:
     # the timestamps that drive the fades and the frame schedule.
     pos = 0
     sub_pos = 0.0
-    sub_step = PAN_SPEED / TARGET_FPS
     flight_start = time.monotonic()
     next_frame = flight_start
 
@@ -280,7 +338,7 @@ while True:
         next_frame += frame_period
         while True:
             check_touch()
-            update_fade(flight_start)
+            update_fade(flight_start, pos)
             remaining = next_frame - time.monotonic()
             if remaining <= 0:
                 break
