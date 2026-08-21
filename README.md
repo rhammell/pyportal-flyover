@@ -1,8 +1,8 @@
 # pyportal-flyover
 
-The PyPortal Flyover Viewer is a visualization for the Adafruit PyPortal that shows an animated flyover between any two locations (US only). A continuous scroll of overhead aerial imagery, captured along the flight path, pans across the PyPortal screen, creating an ever-changing view of the terrain and landscape that exists between the two locations.
+A visualization for the Adafruit PyPortal displaying an animated flyover between any two locations (US only). Overhead aerial imagery captured along the route scrolls continuously across the screen, producing an uninterrupted, ever-changing view of the passing terrain.
 
-This repository contains the source code for generating and displaying the flyover imagery, along with CAD files for a 3D-printable PyPortal stand. 
+This repository contains the source code for generating and displaying the flyover imagery, and CAD files for a 3D-printable PyPortal stand.
 
 For a complete description and step-by-step build tutorial, visit the [PyPortal Flyover Viewer](https://www.hackster.io/rhammell/pyportal-flyover-viewer-1bc359) project on Hackster.io.
 
