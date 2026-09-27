@@ -1,5 +1,9 @@
 # pyportal-flyover
 
+<p align="center">
+  <img src="img/pyportal_flyover_viewer.png" alt="PyPortal Flyover Viewer">
+</p>
+
 A visualization for the Adafruit PyPortal displaying an animated flyover between any two locations (US only). Overhead aerial imagery captured along the route scrolls continuously across the screen, producing an uninterrupted, ever-changing view of the passing terrain.
 
 This repository contains the source code for generating and displaying the flyover imagery, and CAD files for a 3D-printable PyPortal stand.
@@ -28,6 +32,7 @@ For smooth animation, the script drives the ILI9341 display controller directly 
 firmware/     code.py, copied to the CIRCUITPY drive
 generator/    flyover generator + requirements (outputs to generator/output/)
 cad/          stand design (src/ = editable CAD, export/ = printable STL exports)
+img/          README hero image
 ```
 
 ## Usage
