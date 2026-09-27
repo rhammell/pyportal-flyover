@@ -45,17 +45,17 @@ TARGET_FPS = 50
 
 # Backlight fade durations at the start and end of each flight, and the
 # pause on black in between flights.
-FADE_IN_S = 4.0
-FADE_OUT_S = 4.0
+FADE_IN_S = 0.5
+FADE_OUT_S = 0.5
 HOLD_BLACK_S = 1.0
 
 # Steady-state backlight levels (0.0-1.0); each screen touch cycles to the
-# next, starting on the last. Fades ramp between black and the current level.
-BRIGHTNESS_LEVELS = (0.25, 0.50, 0.75, 1.0)
+# next, starting on the first. Fades ramp between black and the current level.
+BRIGHTNESS_LEVELS = (0.1, 0.20, 0.75, 1.0)
 
 # Mounting orientation. Landscape: terrain enters on the right. Portrait
 # (landscape-left edge up): output is rotated 180 so terrain enters on top.
-PORTRAIT = True
+PORTRAIT = False
 
 # Scroll register direction per MADCTL line order: landscape (0xA8)
 # decrements, portrait (0x68) increments. If it pans with garbage, negate.
@@ -186,7 +186,7 @@ touch_sense = digitalio.DigitalInOut(board.TOUCH_YU)
 touch_sense.switch_to_input(pull=digitalio.Pull.UP)
 
 # Brightness selection state.
-brightness_idx = len(BRIGHTNESS_LEVELS) - 1
+brightness_idx = 0
 brightness = BRIGHTNESS_LEVELS[brightness_idx]
 
 # Speed selection state.
